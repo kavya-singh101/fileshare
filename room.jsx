@@ -84,6 +84,9 @@ const Room = () => {
   const [userIdInDisplayFrame, setUserIdInDisplayFrame] = useState(null);
   const [roomMembers, setRoomMembers] = useState([]);
 
+  const [chatInput, setChatInput] = useState("");
+  const messagesEndRef = useRef(null);
+
   const fetchMultipleUserDetails = async (userIds) => {
     try {
       const accessToken = localStorage.getItem("accessToken");
@@ -518,7 +521,7 @@ const Room = () => {
 
   const getMessages = async () => {
     try {
-      const res = await fetch(`http://localhost:3000/api/v1/messages/${classId}`, {
+      const res = await fetch(`http://localhost:3000/api/v1/messages/${roomId}`, {
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${localStorage.getItem("accessToken")}`,
@@ -532,17 +535,8 @@ const Room = () => {
   };
 
   useEffect(() => {
-    if (classId) {
-      fetchClassData();
+    if (roomId) {
       getMessages();
-
-      // Set up interval to fetch messages every 5 seconds
-      // const intervalId = setInterval(() => {
-      //   getMessages();
-      // }, 1000);
-
-      // Clear interval on component unmount
-      // return () => clearInterval(intervalId);
     }
   }, [roomId]);
 
@@ -632,37 +626,29 @@ const Room = () => {
 
           <section id="messages__container" ref={chatContainerRef} className={activeChatContainer ? 'active' : ''}>
             <div id="messages" ref={messagesContainerRef}>
-              <div className="message__wrapper">
-                <div className="message__body__bot">
-                  <strong className="message__author__bot">🤖 Bot</strong>
-                  <p className="message__text__bot">Welcome to the room, Don't be shy, say hello!</p>
+              {Array.isArray(messages) && messages.length === 0 ? (
+                <div className="message__wrapper">
+                  <div className="message__body__bot">
+                    <strong className="message__author__bot">🤖 Bot</strong>
+                    <p className="message__text__bot">No messages yet. Start the conversation!</p>
+                  </div>
                 </div>
-              </div>
-              <div className="message__wrapper">
-                <div className="message__body__bot">
-                  <strong className="message__author__bot">🤖 Bot</strong>
-                  <p className="message__text__bot">Kavya Singh just entered the room!</p>
-                </div>
-              </div>
-              <div className="message__wrapper">
-                <div className="message__body">
-                  <strong className="message__author">Kavya Singh</strong>
-                  <p className="message__text">Great stream!</p>
-                </div>
-              </div>
-              <div className="message__wrapper">
-                <div className="message__body__bot">
-                  <strong className="message__author__bot">🤖 Bot</strong>
-                  <p className="message__text__bot">👋 Kavya Singh has left the room</p>
-                </div>
-              </div>
+              ) : (
+                messages?.map((msg, index) => (
+                  <div key={index} className="message__wrapper">
+                    <div className="message__body">
+                      <strong className="message__author">{msg.senderId?.username || "Unknown"}</strong>
+                      <p className="message__text">{msg.text}</p>
+                    </div>
+                  </div>
+                ))
+              )}
+              <div ref={messagesEndRef} />
             </div>
             <form id="message__form" onSubmit={handleSendMessage}>
-              {/* <input type="text" name="message" placeholder="Send a message...." /> */}
               <input
                 type="text"
                 value={chatInput}
-                name='message'
                 onChange={(e) => setChatInput(e.target.value)}
                 placeholder="Type your message..."
                 className="input input-bordered w-full"
