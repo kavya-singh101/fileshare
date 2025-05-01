@@ -1,7 +1,10 @@
 import React, { useContext, useEffect, useRef, useState } from 'react';
 import AgoraRTC from 'agora-rtc-sdk-ng';
-import { useNavigate } from 'react-router-dom'
+import { io } from "socket.io-client";
+import { useParams, useNavigate } from 'react-router-dom'
 import userContext from "../context/user/userContext";
+import ClassesContext from "../context/classes/classesContext";
+import axios from "axios";
 import './styles/main.css';
 import './styles/room.css';
 import { MdAddComment } from 'react-icons/md';
@@ -9,6 +12,7 @@ import { MdAddComment } from 'react-icons/md';
 const Room = () => {
   const APP_ID = "53bd41defce64a9eb9b17038c118ed3f";
   const id = localStorage.getItem('display_name');
+  const [userDetails, setUserDetails] = useState({});
 
 
   const { checkRefreshToken, userDetail } = useContext(userContext);
@@ -38,6 +42,17 @@ const Room = () => {
     // eslint-disable-next-line
   }, []);
 
+  useEffect(() => {
+    const getUserInfo = async () => {
+      try {
+        const info = await userDetail();
+        setUserDetails(info);
+      } catch (error) {
+        console.error('Error getting user info:', error);
+      }
+    };
+    getUserInfo();
+  }, []);
 
   const [roomId] = useState(() => {
     const urlParam = new URLSearchParams(window.location.search);
@@ -50,6 +65,9 @@ const Room = () => {
   // const [displayName, setdisplayName] = useState(id?.fullname);
 
   // const displayName = localStorage.getItem('display_name');
+
+  const socketRef = useRef(null);
+  const [messages, setMessages] = useState([]);
 
   const streamsContainerRef = useRef(null);
   const displayFrameRef = useRef(null);
@@ -64,9 +82,47 @@ const Room = () => {
   const [activeMemberContainer, setActiveMemberContainer] = useState(false);
   const [activeChatContainer, setActiveChatContainer] = useState(false);
   const [userIdInDisplayFrame, setUserIdInDisplayFrame] = useState(null);
+  const [roomMembers, setRoomMembers] = useState([]);
 
+  const fetchMultipleUserDetails = async (userIds) => {
+    try {
+      const accessToken = localStorage.getItem("accessToken");
+      console.log("Fetching details for user IDs:", userIds);
 
+      const response = await fetch(`http://localhost:3000/api/v1/users/getMultipleUsers`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${accessToken}`
+        },
+        body: JSON.stringify({
+          userIds: userIds
+        })
+      });
 
+      console.log("Response status:", response.status);
+      const responseData = await response.json();
+      console.log("Full response data:", responseData);
+
+      if (response.ok && responseData.success) {
+        const usersData = responseData.data;
+        console.log("Users data received:", usersData);
+
+        // Update userDetails state with all received user data
+        setUserDetails(prev => ({
+          ...prev,
+          ...usersData
+        }));
+        return usersData;
+      } else {
+        console.error("Error response:", responseData);
+        return null;
+      }
+    } catch (error) {
+      console.error('Error fetching user details:', error);
+      return null;
+    }
+  };
 
 
   useEffect(() => {
@@ -96,7 +152,7 @@ const Room = () => {
     };
 
 
-  }, [client, roomId,id]);
+  }, [client, roomId, id]);
 
   useEffect(() => {
     if (displayFrameRef.current) {
@@ -121,7 +177,7 @@ const Room = () => {
       localTracksRef.current = localTracks;
       console.log("user id", id);
       addVideoPlayer(id);
-      // addMemberList(id);
+      await addMemberList(id);
       localTracks[1].play(`user-${id}`);
       await client.publish(localTracks);
     } catch (error) {
@@ -142,17 +198,54 @@ const Room = () => {
   };
 
   // ------------------------------------------------------------------------------------
-  const addMemberList = (userId) => {
-    // if (!memberContainerRef.current) return;
+  const addMemberList = async (userId) => {
+    if (!memberContainerRef.current) return;
 
-    const playerHTML = `
-      <div className="member__wrapper" id="member__${userId}__wrapper">
-        <span className="green__icon"></span>
-        <p className="member_name">${userId}</p>
+    console.log("Adding member:", userId);
+    console.log("Current userDetails state:", userDetails);
+
+    // Get all current user IDs that need details
+    const userIdsToFetch = [userId];
+    if (!userDetails[userId]) {
+      const fetchedData = await fetchMultipleUserDetails(userIdsToFetch);
+      console.log("Fetched data for user:", fetchedData);
+    }
+
+    // Get the fullname from userDetails or use a default
+    const userData = userDetails[userId];
+    console.log("User data for display:", userData);
+    const fullname = userData?.fullname || userId;
+    console.log("Final fullname to display:", fullname);
+
+    const memberHTML = `
+      <div class="member__wrapper" id="member__${userId}__wrapper">
+        <span class="green__icon"></span>
+        <p class="member_name">${fullname}</p>
       </div>
     `;
-    memberContainerRef.current.insertAdjacentHTML('beforeend', playerHTML);
-    // document.getElementById(`user-container-${userId}`);
+
+    const memberList = memberContainerRef.current.querySelector('#member__list');
+    if (memberList) {
+      // Remove existing member if present
+      const existingMember = document.getElementById(`member__${userId}__wrapper`);
+      if (existingMember) {
+        existingMember.remove();
+      }
+      memberList.insertAdjacentHTML('beforeend', memberHTML);
+    }
+
+    // Update room members state
+    setRoomMembers(prev => [...prev, userId]);
+  };
+
+  const removeMemberList = (userId) => {
+    const memberElement = document.getElementById(`member__${userId}__wrapper`);
+    if (memberElement) {
+      memberElement.remove();
+    }
+
+    // Update room members state
+    setRoomMembers(prev => prev.filter(member => member !== userId));
   };
 
   const switchToCamera = async () => {
@@ -168,18 +261,23 @@ const Room = () => {
   };
 
   const handleUserPublished = async (user, mediaType) => {
-    remoteUsersRef.current[user.id] = user;
+    remoteUsersRef.current[user] = user.uid;
     await client.subscribe(user, mediaType);
+    console.log("User published:", user);
 
-    if (!document.getElementById(`user-container-${user.id}`)) {
-      addVideoPlayer(user.id);
+    const actualUserId = user.uid; // Use uid if available, otherwise fallback to id
+
+
+    if (!document.getElementById(`user-container-${user.uid}`)) {
+      addVideoPlayer(user.uid);
     }
-    // if (!document.getElementById(`member__${userId}__wrapper`)) {
-    //   addMemberList(user.id);
-    // }
+
+    if (!document.getElementById(`member__${actualUserId}__wrapper`)) {
+      await addMemberList(actualUserId);
+    }
 
     if (displayFrameRef.current?.style.display === 'block') {
-      const videoFrame = document.getElementById(`user-container-${user.id}`);
+      const videoFrame = document.getElementById(`user-container-${user.uid}`);
       if (videoFrame) {
         videoFrame.style.height = '100px';
         videoFrame.style.width = '100px';
@@ -187,7 +285,7 @@ const Room = () => {
     }
 
     if (mediaType === 'video') {
-      user.videoTrack.play(`user-${user.id}`);
+      user.videoTrack.play(`user-${user.uid}`);
     }
     if (mediaType === 'audio') {
       user.audioTrack.play();
@@ -195,11 +293,12 @@ const Room = () => {
   };
 
   const handleUserLeft = (user) => {
-    delete remoteUsersRef.current[user.id];
-    const userContainer = document.getElementById(`user-container-${user.id}`);
+    delete remoteUsersRef.current[user.uid];
+    const userContainer = document.getElementById(`user-container-${user.uid}`);
     if (userContainer) userContainer.remove();
 
-    if (userIdInDisplayFrame === `user-container-${user.id}`) {
+    removeMemberList(actualUserId);
+    if (userIdInDisplayFrame === `user-container-${user.uid}`) {
       hideDisplayFrame();
     }
   };
@@ -231,6 +330,33 @@ const Room = () => {
       button.classList.remove('active');
     }
   };
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  useEffect(() => {
+    const socket = io("http://localhost:3000", {
+      withCredentials: true,
+    });
+
+    socketRef.current = socket;
+
+    socket.on("connect", () => {
+      console.log("Connected to socket:", socket.id);
+      socket.emit("joinClass", roomId);
+    });
+
+    // Listen for incoming new messages and update the messages state
+    socket.on("newMessage", (message) => {
+      console.log("Received new message:", message); // Debug log to see if it's being received
+      setMessages((prevMessages) => [...prevMessages, message]); // Add new message to state
+    });
+
+    return () => {
+      socket.disconnect();
+    };
+  }, [roomId]);
 
   const toggleScreen = async () => {
     const screenButton = document.getElementById('screen-btn');
@@ -331,6 +457,95 @@ const Room = () => {
     }
   };
 
+  const fetchClassData = async () => {
+    try {
+      const res = await axios.get(`http://localhost:3000/api/v1/users/classes/${classId}/members`, {
+        headers: {
+          Authorization: `Bearer ${localStorage.getItem("accessToken")}`,
+        },
+      });
+
+      if (res.data?.data) {
+        setClassData(res.data.data);
+        setMembers(res.data.data.students || []);
+        setOwner(res.data.data.owner || null);
+
+      }
+    } catch (err) {
+      console.error("Error fetching class data:", err);
+    }
+  };
+
+  const handleSendMessage = async (e) => {
+    e.preventDefault();
+    if (chatInput.trim()) {
+      await sendMessage();
+    }
+  };
+
+  const sendMessage = async () => {
+    try {
+      const messagePayload = {
+        text: chatInput.trim(),
+        id,
+        classId,
+        createdAt: new Date(),
+      };
+
+      // Send HTTP POST request to save message
+      const res = await fetch(`http://localhost:3000/api/v1/messages/${roomId}/send`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${localStorage.getItem("accessToken")}`,
+        },
+        body: JSON.stringify({ text: chatInput.trim() }),
+      });
+
+      const message = await res.json();
+
+      // Emit the socket event with message.data
+      if (socketRef.current) {
+        socketRef.current.emit("sendMessage", message);
+      }
+
+      setChatInput(""); // Clear input
+    } catch (err) {
+      console.error("Error sending message:", err);
+    }
+
+  };
+
+  const getMessages = async () => {
+    try {
+      const res = await fetch(`http://localhost:3000/api/v1/messages/${classId}`, {
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${localStorage.getItem("accessToken")}`,
+        },
+      });
+      const data = await res.json();
+      setMessages(data); // ✅ directly set the array
+    } catch (err) {
+      console.error("Error fetching messages:", err);
+    }
+  };
+
+  useEffect(() => {
+    if (classId) {
+      fetchClassData();
+      getMessages();
+
+      // Set up interval to fetch messages every 5 seconds
+      // const intervalId = setInterval(() => {
+      //   getMessages();
+      // }, 1000);
+
+      // Clear interval on component unmount
+      // return () => clearInterval(intervalId);
+    }
+  }, [roomId]);
+
   const handleLeave = async () => {
     await client.leave();
     localTracksRef.current.forEach(track => track && track.close());
@@ -361,7 +576,7 @@ const Room = () => {
               <path d="M24 20h-3v4l-5.333-4h-7.667v-4h2v2h6.333l2.667 2v-2h3v-8.001h-2v-2h4v12.001zm-15.667-6l-5.333 4v-4h-3v-14.001l18 .001v14h-9.667zm-6.333-2h3v2l2.667-2h8.333v-10l-14-.001v10.001z" />
             </svg>
           </button>
-          
+
         </div>
       </header>
 
@@ -370,10 +585,10 @@ const Room = () => {
           <section id="members__container" ref={memberContainerRef} className={activeMemberContainer ? 'active' : ''}>
             <div id="members__header">
               <p>Participants</p>
-              <strong id="members__count">27</strong>
+              <strong id="members__count">{roomMembers.length}</strong>
             </div>
             <div id="member__list">
-              <div className="member__wrapper" id="member__1__wrapper">
+              {/* <div className="member__wrapper" id="member__1__wrapper">
                 <span className="green__icon"></span>
                 <p className="member_name">Sulammita</p>
               </div>
@@ -384,7 +599,7 @@ const Room = () => {
               <div className="member__wrapper" id="member__3__wrapper">
                 <span className="green__icon"></span>
                 <p className="member_name">Shahriar P. Shuvo 👋</p>
-              </div>
+              </div> */}
             </div>
           </section>
 
@@ -442,8 +657,17 @@ const Room = () => {
                 </div>
               </div>
             </div>
-            <form id="message__form" onSubmit={(e) => e.preventDefault()}>
-              <input type="text" name="message" placeholder="Send a message...." />
+            <form id="message__form" onSubmit={handleSendMessage}>
+              {/* <input type="text" name="message" placeholder="Send a message...." /> */}
+              <input
+                type="text"
+                value={chatInput}
+                name='message'
+                onChange={(e) => setChatInput(e.target.value)}
+                placeholder="Type your message..."
+                className="input input-bordered w-full"
+              />
+              <button type="submit" className="btn btn-primary">Send</button>
             </form>
           </section>
         </div>
